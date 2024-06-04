@@ -14,6 +14,7 @@ import MQTT_CONFIG
 import HOME_ASSISTANT
 import urequests
 
+# Starting and end time of your preferrered power schedule and the max duration of a full wash
 HEURE_DEBUT = 22
 HEURE_FIN = 7
 DUREE_MAX = 4
@@ -28,7 +29,8 @@ PM_CST = {16: 'PM_NONE', 10555714: 'PM_PERFORMANCE', 17: 'PM_POWERSAVE'}
 
 previous_answer = None
 
-#https://www.epochconverter.com/
+# Constant for the daylight saving for the next 10 years
+# see https://www.epochconverter.com/
 DAYLIGHT = [
     1711846800, # 2024-03-31 01:00:00 / 2024-10-27 02:00:00
     1729994400,
@@ -60,11 +62,13 @@ DAYLIGHT_SHIFT = [GMT+1, GMT]*10
 display = badger2040.Badger2040()
 display.led(0)
 
+# Clear the screen ... lol
 def clear_screen():
     display.set_pen(WHITE)
     display.clear()
     display.set_pen(BLACK)
 
+# Display some network info (used as startup screen to check that the setup is correct)
 def show_net_info():
     clear_screen()
     ips = wlan.ifconfig()
@@ -81,6 +85,8 @@ def show_net_info():
     display.update()
     time.sleep(2)
 
+# Connect to the WIFI network  (TODO: move to a function)
+# and fetch the date & time from NTP (universal time)
 try:
     display.set_update_speed(badger2040.UPDATE_FAST)
     clear_screen()
@@ -106,16 +112,19 @@ except RuntimeError as rte:
 except OSError as ose:
     print(f"ntptime.settime OSError: {ose}")
 
+# Calc a shift in second according to the GMT and day light saving
+# For example, for GMT+1 and 1h daylight => (1+1)*3600 = 7200s
 def calc_daylight() -> int:
     table = zip(DAYLIGHT, DAYLIGHT_SHIFT)
     f = [v for v in table if (v[0] < utime.time())]
     return f[-1][1]*3600
 
-
+# Update the RTC (real-time clock) with the gmt/daylight fixed time
 rtc = RTC()
 year, month, day, hour, minute, second, weekday, yearday =  utime.localtime(utime.time()+calc_daylight())
 rtc.datetime((year, month, day, weekday, hour, minute, second, yearday))
 
+# Format the information message about your power schedule (adapt to your need)
 def calc_regime() -> str:
     weekday =  rtc.datetime()[3]
     if weekday < 4:
@@ -125,17 +134,20 @@ def calc_regime() -> str:
     else:
         return "toute la journée"
 
+# Format the message about the programmation
 def calc_prog(hour, weekday) -> str:
     if hour >= HEURE_DEBUT or hour <= HEURE_FIN-DUREE_MAX or weekday > 4:
         return "maintenant"
     else:
         return "dans {} heure{}".format(HEURE_DEBUT + 4 - hour, 's' if (HEURE_DEBUT + 4 - hour) > 1 else '')
 
+# Display the wash machine image
 def draw_image() -> None:
     jpeg = jpegdec.JPEG(display.display)
     jpeg.open_file('/images/mac_laver.jpg')
     jpeg.decode(0, 25)
 
+# Display the date and the time at the top in reverse
 def draw_day_time() -> None:
     display.set_pen(BLACK)
     display.rectangle(0, 0, WIDTH, 20)
@@ -148,7 +160,8 @@ def draw_day_time() -> None:
     display.text(heure,  WIDTH - display.measure_text(heure) - 4, 4, WIDTH)
     display.set_pen(BLACK)
 
-def push_HA(answer, mqttclient):
+# Push the suggestion message to Home Assistant (optional and either via webhook or via mqtt)
+def push_HA(answer, mqttclient) -> None:
     global previous_answer
     if previous_answer != answer:
         previous_answer = answer
@@ -169,6 +182,7 @@ def push_HA(answer, mqttclient):
             print(f"{hour}:{minute:02d}:{second:02d} Exception in push_HA : {type(e).__name__}{e.args}")
             # EPERM=1, EAGAIN = 11, EIO = 5, EINVAL=22, ENODEV=19, EOPNOTSUPP=95, ECONNABORTED=103, ETIMEDOUT=110, EHOSTUNREACH=113
 
+# Display the wash machine starting time suggestion
 def draw_suggestion() -> str:
     display.set_pen(WHITE)
     display.rectangle(X_TXT-7, 24, WIDTH, HEIGHT)
@@ -188,6 +202,7 @@ def draw_suggestion() -> str:
     display.set_font("bitmap6")
     return answer
 
+# Init MQTT (optional - only you use it for HA)
 def mqtt_init() -> MQTTClient:
     return MQTTClient(
         client_id = MQTT_CONFIG.MQTT_CLIENT_ID,
