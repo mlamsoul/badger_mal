@@ -1,18 +1,18 @@
+import gc
+import time
 import badger2040
 from badger2040 import WIDTH, HEIGHT
 from machine import RTC
 from umqtt.simple import MQTTClient
 import network
-import time
 import utime
 import ntptime
 import jpegdec
 import binascii
-import gc
+import urequests
 import WIFI_CONFIG
 import MQTT_CONFIG
 import HOME_ASSISTANT
-import urequests
 
 # Starting and end time of your preferrered power schedule and the max duration of a full wash
 HEURE_DEBUT = 22
@@ -26,8 +26,6 @@ MONTH = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'aoû
 BLACK = 0
 WHITE = 15
 PM_CST = {16: 'PM_NONE', 10555714: 'PM_PERFORMANCE', 17: 'PM_POWERSAVE'}
-
-previous_answer = None
 
 # Constant for the daylight saving for the next 10 years
 # see https://www.epochconverter.com/
@@ -62,14 +60,14 @@ DAYLIGHT_SHIFT = [GMT+1, GMT]*10
 display = badger2040.Badger2040()
 display.led(0)
 
-# Clear the screen ... lol
 def clear_screen():
+    """ Clear the screen ... lol """
     display.set_pen(WHITE)
     display.clear()
     display.set_pen(BLACK)
 
-# Display some network info (used as startup screen to check that the setup is correct)
 def show_net_info():
+    """ Display some network info (used as startup screen to check that the setup is correct) """
     clear_screen()
     ips = wlan.ifconfig()
     mac = binascii.hexlify(wlan.config('mac'),':').decode()
@@ -91,7 +89,7 @@ try:
     display.set_update_speed(badger2040.UPDATE_FAST)
     clear_screen()
     display.update()
-    
+
     wlan = network.WLAN(network.STA_IF)  # = station vs AP_IF = access point
     network.country(WIFI_CONFIG.COUNTRY)
     wlan.active(True)
@@ -100,68 +98,65 @@ try:
         print("Connecting...")
         time.sleep(0.2)
     gc.collect()
-    print(gc.mem_free())
-    
+    print(gc.mem_free())    # pylint: disable=no-member
+
     if display.isconnected():
         print(wlan.ifconfig()[0])
         #ntptime.host = "be.pool.ntp.org"
         ntptime.timeout = 2
         ntptime.settime()
 except RuntimeError as rte:
-    print(f"RuntimeError: {rte.value}")
+    print(f"RuntimeError: {rte.value}")    # pylint: disable=no-member
 except OSError as ose:
     print(f"ntptime.settime OSError: {ose}")
 
-# Calc a shift in second according to the GMT and day light saving
-# For example, for GMT+1 and 1h daylight => (1+1)*3600 = 7200s
 def calc_daylight() -> int:
+    """ Calc a shift in second according to the GMT and day light saving
+        For example, for GMT+1 and 1h daylight => (1+1)*3600 = 7200s """
     table = zip(DAYLIGHT, DAYLIGHT_SHIFT)
-    f = [v for v in table if (v[0] < utime.time())]
+    f = [v for v in table if v[0] < utime.time()]
     return f[-1][1]*3600
 
-# Update the RTC (real-time clock) with the gmt/daylight fixed time
-rtc = RTC()
-year, month, day, hour, minute, second, weekday, yearday =  utime.localtime(utime.time()+calc_daylight())
-rtc.datetime((year, month, day, weekday, hour, minute, second, yearday))
-
-# Format the information message about your power schedule (adapt to your need)
-def calc_regime() -> str:
-    weekday =  rtc.datetime()[3]
-    if weekday < 4:
-        return "après {}h, avant {}h".format(HEURE_DEBUT, HEURE_FIN)
+def calc_regime(rtc) -> str:
+    """ Format the information message about your power schedule (adapt to your need) """
+    weekday = rtc.datetime()[3]
+    if weekday < 4:    # 4 = Friday
+        return f"après {HEURE_DEBUT}h, avant {HEURE_FIN}h"
     elif weekday == 4:
-        return "après {}h".format(HEURE_DEBUT, HEURE_FIN)
+        return f"après {HEURE_DEBUT}h"
     else:
         return "toute la journée"
 
-# Format the message about the programmation
 def calc_prog(hour, weekday) -> str:
+    """ Format the message about the programmation """
     if hour >= HEURE_DEBUT or hour <= HEURE_FIN-DUREE_MAX or weekday > 4:
         return "maintenant"
     else:
-        return "dans {} heure{}".format(HEURE_DEBUT + 4 - hour, 's' if (HEURE_DEBUT + 4 - hour) > 1 else '')
+        delay = HEURE_DEBUT + DUREE_MAX - hour
+        return f"dans {delay} heure{'s' if (delay) > 1 else ''}"
 
-# Display the wash machine image
 def draw_image() -> None:
+    """ Display the wash machine image """
     jpeg = jpegdec.JPEG(display.display)
     jpeg.open_file('/images/mac_laver.jpg')
     jpeg.decode(0, 25)
 
-# Display the date and the time at the top in reverse
-def draw_day_time() -> None:
+def draw_day_time(rtc) -> None:
+    """ Display the date and the time at the top in reverse """
     display.set_pen(BLACK)
     display.rectangle(0, 0, WIDTH, 20)
     display.set_pen(WHITE)
 
     month, day, weekday, hour, minute =  rtc.datetime()[1:6]
-    heure = "{:02}:{:02}".format(hour, minute)
+    heure = f"{hour:02}:{minute:02}"
 
-    display.text("{} {} {}".format(JOUR_SEM[weekday], day, MONTH[month-1]), 3, 4)
+    display.text(f"{JOUR_SEM[weekday]} {day} {MONTH[month-1]}", 3, 4)
     display.text(heure,  WIDTH - display.measure_text(heure) - 4, 4, WIDTH)
     display.set_pen(BLACK)
 
-# Push the suggestion message to Home Assistant (optional and either via webhook or via mqtt)
-def push_HA(answer, mqttclient) -> None:
+previous_answer = None
+def push_HA(rtc, answer, mqttclient) -> None:           # pylint: disable=invalid-name
+    """ Push the suggestion message to Home Assistant (optional and either via webhook or via mqtt) """
     global previous_answer
     if previous_answer != answer:
         previous_answer = answer
@@ -172,23 +167,23 @@ def push_HA(answer, mqttclient) -> None:
             urequests.request('POST', f'{HOME_ASSISTANT.PROTOCOL}://{HOME_ASSISTANT.HOSTNAME}/api/webhook/badger2040w', json=json)
         except Exception as e:
             print(f"{hour}:{minute:02d}:{second:02d} Exception in push_HA : {type(e).__name__}{e.args}")
-            
+
         try:
             mqttclient.connect()
             mqttclient.publish('badger/msg', answer, qos=0)
             mqttclient.disconnect()
-            
+
         except Exception as e:
             print(f"{hour}:{minute:02d}:{second:02d} Exception in push_HA : {type(e).__name__}{e.args}")
             # EPERM=1, EAGAIN = 11, EIO = 5, EINVAL=22, ENODEV=19, EOPNOTSUPP=95, ECONNABORTED=103, ETIMEDOUT=110, EHOSTUNREACH=113
 
-# Display the wash machine starting time suggestion
-def draw_suggestion() -> str:
+def draw_suggestion(rtc) -> str:
+    """ Display the wash machine starting time suggestion """
     display.set_pen(WHITE)
     display.rectangle(X_TXT-7, 24, WIDTH, HEIGHT)
     display.set_pen(BLACK)
 
-    display.text(calc_regime(), X_TXT-7, 28)
+    display.text(calc_regime(rtc), X_TXT-7, 28)
     display.set_font("cursive")
     display.set_thickness(3)
 
@@ -198,12 +193,12 @@ def draw_suggestion() -> str:
     msg = "démarrer" if answer=="maintenant" else "programmer"
     display.text(msg, X_TXT, 70, scale=1)
     scale = (WIDTH-X_TXT) / display.measure_text(answer, spacing=0, scale=1)
-    display.text("{}".format(answer), X_TXT, 100, scale=min(scale,1))
+    display.text(f"{answer}", X_TXT, 100, scale=min(scale,1))
     display.set_font("bitmap6")
     return answer
 
-# Init MQTT (optional - only you use it for HA)
 def mqtt_init() -> MQTTClient:
+    """ Init MQTT (optional - only you use it for HA) """
     return MQTTClient(
         client_id = MQTT_CONFIG.MQTT_CLIENT_ID,
         server = MQTT_CONFIG.MQTT_SERVER,
@@ -213,8 +208,15 @@ def mqtt_init() -> MQTTClient:
         keepalive = MQTT_CONFIG.MQTT_KEEPALIVE,
         ssl = MQTT_CONFIG.MQTT_SSL,
         ssl_params = MQTT_CONFIG.MQTT_SSL_PARAMS)
-    
+
 def main() -> None:
+    """ main function """
+
+    # Update the RTC (real-time clock) with the gmt/daylight fixed time
+    rtc = RTC()
+    year, month, day, hour, minute, second, weekday, yearday = utime.localtime(utime.time()+calc_daylight())
+    rtc.datetime((year, month, day, weekday, hour, minute, second, yearday))
+
     clear_screen()
     draw_image()
     show_net_info()
@@ -223,9 +225,9 @@ def main() -> None:
     mqttclient = mqtt_init()
 
     while True:
-        draw_day_time()
-        answer = draw_suggestion()
-        push_HA(answer, mqttclient)
+        draw_day_time(rtc)
+        answer = draw_suggestion(rtc)
+        push_HA(rtc, answer, mqttclient)
         display.update()
         badger2040.sleep_for(1)
         gc.collect()
